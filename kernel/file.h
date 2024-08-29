@@ -1,10 +1,17 @@
 struct file {
+#ifdef LAB_NET
+  enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE, FD_SOCK } type;
+#else
   enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
+#endif
   int ref; // reference count
   char readable;
   char writable;
   struct pipe *pipe; // FD_PIPE
   struct inode *ip;  // FD_INODE and FD_DEVICE
+#ifdef LAB_NET
+  struct sock *sock; // FD_SOCK
+#endif
   uint off;          // FD_INODE
   short major;       // FD_DEVICE
 };
@@ -14,22 +21,20 @@ struct file {
 #define	mkdev(m,n)  ((uint)((m)<<16| (n)))
 
 // in-memory copy of an inode
-// In-memory inode structure
 struct inode {
-  uint dev;           // 设备号
-  uint inum;          // inode 编号
-  int ref;            // 引用计数
-  struct sleeplock lock; // 保护以下所有内容的睡眠锁
-  int valid;          // inode 是否已从磁盘读取？
+  uint dev;           // Device number
+  uint inum;          // Inode number
+  int ref;            // Reference count
+  struct sleeplock lock; // protects everything below here
+  int valid;          // inode has been read from disk?
 
-  short type;         // 磁盘 inode 的副本
+  short type;         // copy of disk inode
   short major;
   short minor;
   short nlink;
   uint size;
-  uint addrs[NDIRECT+2];   // 数据块地址数组，包括直接块、一级间接块和二级间接块
+  uint addrs[NDIRECT+1];
 };
-
 
 // map major device number to device functions.
 struct devsw {
@@ -40,3 +45,4 @@ struct devsw {
 extern struct devsw devsw[];
 
 #define CONSOLE 1
+#define STATS   2
