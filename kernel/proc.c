@@ -126,6 +126,15 @@ found:
     release(&p->lock);
     return 0;
   }
+  
+  //分配一个用户系统调用信息结构页面
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+  // 如果分配失败，需要释放之前分配的资源并将进程状态重置
+    freeproc(p);// 释放进程的数据结构
+    release(&p->lock);// 释放进程锁，以便其他进程可以访问
+    return 0;// 返回0表示分配失败
+  }
+  memmove(p->usyscall, &p->pid, 8);
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -147,12 +156,17 @@ found:
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
+//释放进程资源
 static void
 freeproc(struct proc *p)
 {
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  //释放用户系统调用信息结构页内存
+  if (p->usyscall)
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -168,12 +182,14 @@ freeproc(struct proc *p)
 
 // Create a user page table for a given process,
 // with no user memory, but with trampoline pages.
+extern pagetable_t kernel_pagetable;
+
 pagetable_t
 proc_pagetable(struct proc *p)
 {
   pagetable_t pagetable;
 
-  // An empty page table.
+  // 创建一个空页表
   pagetable = uvmcreate();
   if(pagetable == 0)
     return 0;
@@ -188,11 +204,22 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
-  // map the trapframe just below TRAMPOLINE, for trampoline.S.
+  // map the trapframe page just below the trampoline page, for
+  // trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
+    return 0;
+  }
+  
+ // 映射用户系统调用信息结构页，位于陷阱帧页的下方
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+               (uint64)(p->usyscall), PTE_R | PTE_U) < 0){
+               // 如果映射失败，撤销之前的映射并释放资源
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);// 撤销跳板代码的映射
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);// 撤销陷阱帧页的映射
+    uvmfree(pagetable, 0);// 释放页表
     return 0;
   }
 
@@ -201,11 +228,13 @@ proc_pagetable(struct proc *p)
 
 // Free a process's page table, and free the
 // physical memory it refers to.
+//释放进程的页表和相关资
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);//撤销映射
   uvmfree(pagetable, sz);
 }
 
@@ -269,36 +298,33 @@ growproc(int n)
 
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
-int 
+int
 fork(void)
 {
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
 
-  // 分配进程。
+  // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
   }
 
-  // 从父进程复制用户内存到子进程。
+  // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
-  np->sz = p->sz;//将子进程的内存大小 sz 设置为与父进程相同
+  np->sz = p->sz;
 
-  np->parent = p;//将子进程的父进程指针 parent 设置为指向当前进程 p
-  np->trace_mask = p->trace_mask;//将子进程的 trace_mask 属性设置为与父进程相同
-
-  // 复制保存的用户寄存器。
+  // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
-  // 让子进程返回 0。
+  // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
-  // 增加打开文件描述符的引用计数。
+  // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
@@ -320,7 +346,6 @@ fork(void)
 
   return pid;
 }
-
 
 // Pass p's abandoned children to init.
 // Caller must hold wait_lock.
@@ -658,29 +683,3 @@ procdump(void)
     printf("\n");
   }
 }
-
-
-uint64 nproc(void)
-{
-  uint64 counter = 0; // 初始化一个计数器，用于统计活动进程数量
-  struct proc *p; // 定义指向进程控制块（PCB）的指针
-  
-  // 遍历从 proc 到 &proc[NPROC] 之间的进程控制块
-  for(p = proc; p < &proc[NPROC]; p++) {
-    acquire(&p->lock); // 获取该进程的锁，防止其他线程同时修改该进程的状态
-    
-    if(p->state != UNUSED) {
-      ++counter; // 如果进程的状态不是 UNUSED，增加计数器的值
-    }
-    
-    release(&p->lock); // 释放进程的锁
-  }
-  
-  return counter; // 返回活动进程的数量
-}
-
-
-
-
-
-

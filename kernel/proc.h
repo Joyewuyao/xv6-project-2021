@@ -106,5 +106,4 @@ struct proc {
   struct inode *cwd;           // 当前目录
   struct usyscall *usyscall;   // 与内核共享的系统调用数据
   char name[16];               // 进程名称（用于调试）
-  uint trace_mask;             // 跟踪掩码
 };
